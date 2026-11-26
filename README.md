@@ -18,8 +18,12 @@ It pulls live bus arrivals for your stop from LTA DataMall, subtracts your walki
 | Crowd level of the next bus (green seats / yellow standing / red packed) | LTA `Load` field |
 | Rain warning: blue bar, blue breathing LEDs, beep | data.gov.sg NEA 2-hour forecast |
 | LED bars: green = relax, amber = get ready, red = leave now | Fire side LED bars |
+| Wakes when someone walks up, sleeps 60 s after (and checks buses less often while asleep) | ToF unit, self-learning background distance |
+| Dims the screen and LEDs in a dark corridor | Light unit |
+| Indoor temperature and humidity in the bottom bar | ENV II unit (SHT30) |
+| Beeps twice as you walk up if rain is forecast | ToF + NEA forecast |
 
-Coming next: ToF wake-on-approach, Light-unit auto dimming, ENV II indoor temperature/humidity, and RFID tap-out that sends a Telegram message.
+Coming next: RFID tap-out that sends a Telegram message.
 
 ## Hardware
 
@@ -52,3 +56,4 @@ Coming next: ToF wake-on-approach, Light-unit auto dimming, ENV II indoor temper
 - **Step 1**: wiring check: I2C scan for RFID, ToF and ENV II plus a Light unit reading, all found.
 - **Step 2**: Wi-Fi, NTP time (SGT), live LTA bus arrivals and the leave-now countdown.
 - **Step 3**: NEA 2-hour forecast and rain alert.
+- **Step 4**: ToF wake/sleep with a learned background (works wherever it's mounted), Light-unit night dimming (this unit reads higher when darker: ~2150 lit, 4095 dark), ENV II indoor readout, automatic Wi-Fi reconnect.

@@ -3,8 +3,11 @@
 // Shows live bus arrivals for your stop (LTA DataMall), works out when you need
 // to walk out the door to catch the next bus, and warns you when NEA's 2-hour
 // forecast says rain for your area (blue LED bars + beep).
+// The ToF sensor wakes the screen when someone walks up, the Light unit dims it
+// at night, and the ENV II unit shows indoor temperature and humidity.
 //
 // Buttons:  A = refresh now   B = mute / unmute   C = show all buses / my buses
+//           (any button also wakes the screen)
 // Serial (115200) prints every fetch for debugging.
 
 #include <M5Unified.h>
@@ -13,6 +16,8 @@
 #include <HTTPClient.h>
 #include <ArduinoJson.h>
 #include <Adafruit_NeoPixel.h>
+#include <Wire.h>
+#include <VL53L0X.h>
 #include <time.h>
 #include <climits>
 #include "config.h"
@@ -23,6 +28,9 @@ static constexpr int LED_PIN = 15;     // M5Stack Fire side LED bars
 static constexpr int LED_COUNT = 10;
 Adafruit_NeoPixel leds(LED_COUNT, LED_PIN, NEO_GRB + NEO_KHZ800);
 M5Canvas canvas(&M5.Display);
+VL53L0X tof;                           // ToF unit, I2C 0x29 on Port A
+static constexpr uint8_t SHT30_ADDR = 0x44;   // ENV II temperature / humidity
+static constexpr int LIGHT_PIN = 36;   // Light unit, Port B analog
 
 // ---------------------------------------------------------------- data
 struct Bus {
@@ -46,6 +54,20 @@ uint32_t lastWeatherFetch = 0;
 
 bool muted = false;
 bool onlyMine = true;        // only matters if MY_BUSES is set
+
+// sensors
+bool tofOk = false;
+int distanceMm = -1;
+float background = -1;      // learned empty-scene ToF distance
+bool envOk = false;
+float indoorC = NAN, indoorRH = NAN;
+uint32_t lastEnvRead = 0;
+int lightRaw = 0;
+bool night = false;
+
+// sleep / wake
+bool awake = true;
+uint32_t lastPresence = 0;
 
 // ---------------------------------------------------------------- helpers
 time_t parseIso(const char *s) {
@@ -178,6 +200,54 @@ bool fetchWeather() {
   return false;
 }
 
+// ---------------------------------------------------------------- sensors
+bool readSht30(float &c, float &rh) {
+  Wire.beginTransmission(SHT30_ADDR);
+  Wire.write(0x2C); Wire.write(0x06);          // single shot, high repeatability
+  if (Wire.endTransmission() != 0) return false;
+  delay(20);
+  if (Wire.requestFrom(SHT30_ADDR, (uint8_t)6) != 6) return false;
+  uint8_t d[6];
+  for (int i = 0; i < 6; i++) d[i] = Wire.read();
+  c  = ((d[0] << 8) | d[1]) * 175.0f / 65535.0f - 45.0f;
+  rh = ((d[3] << 8) | d[4]) * 100.0f / 65535.0f;
+  return true;
+}
+
+void readSensors() {
+  // ToF: someone at the door?
+  if (tofOk) {
+    uint16_t mm = tof.readRangeContinuousMillimeters();
+    distanceMm = (tof.timeoutOccurred() || mm >= 8000) ? -1 : mm;
+    // Learn the empty-scene distance (wall, desk, door) and wake when something comes
+    // clearly closer than it, so the same code works wherever the Fire is mounted.
+    float d = distanceMm > 0 ? (float)distanceMm : 2000.0f;    // out of range = far
+    if (background < 0) background = d;
+    bool near = d < background - WAKE_DELTA_MM && d < WAKE_DISTANCE_MM;
+    if (near) lastPresence = millis();
+    else background = background * 0.98f + d * 0.02f;       // track slow changes only
+  }
+
+  // Light: day / night with a gap so it doesn't flicker at the edge
+  // Light: higher = darker. Must hold for 3 s so a passing shadow doesn't flicker it.
+  lightRaw = analogRead(LIGHT_PIN);
+  static uint32_t lightSince = 0;
+  bool wantNight = night ? !(lightRaw < LIGHT_DAY_BELOW) : (lightRaw > LIGHT_NIGHT_ABOVE);
+  if (wantNight == night) lightSince = millis();
+  else if (millis() - lightSince > 3000) {
+    night = wantNight;
+    Serial.println(night ? "Night mode" : "Day mode");
+  }
+
+  // ENV II every few seconds
+  if (millis() - lastEnvRead > ENV_REFRESH_MS || lastEnvRead == 0) {
+    float c, rh;
+    envOk = readSht30(c, rh);
+    if (envOk) { indoorC = c; indoorRH = rh; }
+    lastEnvRead = millis();
+  }
+}
+
 // ---------------------------------------------------------------- outputs
 uint16_t loadColour(const char *load) {
   if (strcmp(load, "SEA") == 0) return TFT_GREEN;      // seats available
@@ -197,7 +267,10 @@ void beep(int times) {
 // leaveIn: minutes until you must leave (-1 = no catchable bus)
 void updateLeds(int leaveIn) {
   uint32_t c;
-  if (raining) {                                         // blue breathing = bring umbrella
+  leds.setBrightness(night ? LED_BRIGHTNESS_NIGHT : LED_BRIGHTNESS);
+  if (!awake) {
+    c = leds.Color(0, 0, 0);
+  } else if (raining) {                                         // blue breathing = bring umbrella
     float k = 0.5f + 0.5f * sinf(millis() / 400.0f);
     c = leds.Color(0, 0, (uint8_t)(40 + 215 * k));
   } else if (leaveIn < 0) {
@@ -301,9 +374,11 @@ void drawScreen(int &leaveInOut) {
   canvas.setTextDatum(middle_center);
   canvas.setFont(&fonts::Font2);
   canvas.setTextColor(TFT_WHITE);
-  char wline[64];
-  if (raining) snprintf(wline, sizeof(wline), "BRING UMBRELLA  -  %s", weatherText);
-  else snprintf(wline, sizeof(wline), "%s: %s%s", WEATHER_AREA, weatherText, muted ? "   [muted]" : "");
+  char indoor[24] = "";
+  if (envOk) snprintf(indoor, sizeof(indoor), "  |  Home %.1fC %.0f%%", indoorC, indoorRH);
+  char wline[80];
+  if (raining) snprintf(wline, sizeof(wline), "BRING UMBRELLA - %s%s", weatherText, indoor);
+  else snprintf(wline, sizeof(wline), "%s: %s%s%s", WEATHER_AREA, weatherText, indoor, muted ? " [M]" : "");
   canvas.drawString(wline, 160, 228);
 
   canvas.pushSprite(0, 0);
@@ -322,6 +397,15 @@ void setup() {
 
   canvas.setColorDepth(16);
   canvas.createSprite(320, 240);
+  M5.Display.setBrightness(SCREEN_DAY);
+
+  Wire.begin(M5.Ex_I2C.getSDA(), M5.Ex_I2C.getSCL());   // Port A
+  tof.setTimeout(200);
+  tofOk = tof.init();
+  if (tofOk) tof.startContinuous(100);
+  Serial.printf("ToF: %s\n", tofOk ? "ok" : "NOT FOUND");
+  pinMode(LIGHT_PIN, INPUT);
+  lastPresence = millis();
 
   connectWifi();
   configTzTime("SGT-8", "pool.ntp.org", "time.google.com");
@@ -338,27 +422,63 @@ void setup() {
 
 void loop() {
   M5.update();
-  if (M5.BtnA.wasPressed()) { lastBusFetch = 0; lastWeatherFetch = 0; beep(1); }
-  if (M5.BtnB.wasPressed()) { muted = !muted; if (!muted) beep(1); }
-  if (M5.BtnC.wasPressed()) { onlyMine = !onlyMine; }
+  bool pressed = M5.BtnA.wasPressed() || M5.BtnB.wasPressed() || M5.BtnC.wasPressed();
+  bool wasAwake = awake;
 
-  if (lastBusFetch == 0 || millis() - lastBusFetch > BUS_REFRESH_MS) {
+  if (M5.BtnA.wasPressed() && wasAwake) { lastBusFetch = 0; lastWeatherFetch = 0; beep(1); }
+  if (M5.BtnB.wasPressed() && wasAwake) { muted = !muted; if (!muted) beep(1); }
+  if (M5.BtnC.wasPressed() && wasAwake) { onlyMine = !onlyMine; }
+  if (pressed) lastPresence = millis();
+
+  // Wi-Fi dropped or never connected: try again every 15 s
+  static uint32_t lastWifiTry = 0;
+  if (WiFi.status() != WL_CONNECTED && millis() - lastWifiTry > 15000) {
+    Serial.println("WiFi not connected, retrying...");
+    WiFi.disconnect();
+    WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+    lastWifiTry = millis();
+  }
+
+  static uint32_t lastSense = 0;
+  if (millis() - lastSense > 100) { readSensors(); lastSense = millis(); }
+
+  // sleep / wake
+  awake = ALWAYS_ON || (millis() - lastPresence < AWAKE_SECONDS * 1000UL);
+  if (awake && !wasAwake) {                    // someone just walked up
+    Serial.println("Wake");
+    lastBusFetch = 0;                          // fresh arrivals right away
+    if (raining) beep(2);                      // umbrella reminder on the way out
+  }
+  if (!awake && wasAwake) Serial.println("Sleep");
+  static int lastBl = -1;
+  int bl = awake ? (night ? SCREEN_NIGHT : SCREEN_DAY) : 0;
+  if (bl != lastBl) { M5.Display.setBrightness(bl); lastBl = bl; }
+
+  uint32_t busEvery = awake ? BUS_REFRESH_MS : BUS_REFRESH_IDLE_MS;
+  if (lastBusFetch == 0 || millis() - lastBusFetch > busEvery) {
     busOk = fetchBuses();
     lastBusFetch = millis();
   }
   if (lastWeatherFetch == 0 || millis() - lastWeatherFetch > WEATHER_REFRESH_MS) {
     weatherOk = fetchWeather();
     lastWeatherFetch = millis();
-    if (raining && !wasRaining) beep(2);    // rain just started in the forecast
+    if (raining && !wasRaining && awake) beep(2);   // rain just started in the forecast
     wasRaining = raining;
   }
 
   static uint32_t lastDraw = 0;
   static int leaveIn = -1;
-  if (millis() - lastDraw > 500) {
+  if (awake && millis() - lastDraw > 500) {
     drawScreen(leaveIn);
     lastDraw = millis();
   }
   updateLeds(leaveIn);
-  delay(20);
+
+  static uint32_t lastLog = 0;
+  if (millis() - lastLog > 2000) {
+    Serial.printf("wifi=%d dist=%dmm bg=%.0fmm light=%d night=%d awake=%d indoor=%.1fC %.0f%%\n",
+                  WiFi.status() == WL_CONNECTED, distanceMm, background, lightRaw, night, awake, indoorC, indoorRH);
+    lastLog = millis();
+  }
+  delay(10);
 }
