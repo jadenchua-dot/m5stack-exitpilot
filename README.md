@@ -26,6 +26,33 @@ It pulls live bus arrivals for your stop from LTA DataMall, subtracts your walki
 
 All internet work (LTA, NEA, Telegram) runs in a background task on the ESP32's second core, so the screen, sensors and RFID reader never wait on the network.
 
+## Why it matters
+
+### Saves power and shared data, not just time
+
+ExitPilot is built to sit by the door 24/7, so it shouldn't burn power showing bus times to an empty corridor.
+
+- **Screen and LEDs only run when someone is there.** The ToF sensor turns everything on when you walk up and off again 60 s after you leave (`AWAKE_SECONDS`). If 20 people pass the door in a day, the screen is on for about 20 minutes instead of 24 hours: roughly **98% less screen-on time** than an always-on display.
+- **Night dimming.** In a dark corridor the backlight drops from 180 to 25 (about 86% lower) and the LED bars to a faint glow, so it isn't lighting up the house at 2 am.
+- **Fewer API calls.** While nobody is around it checks LTA every 2 minutes instead of every 30 seconds, and fetches fresh times the moment someone walks up. That's up to **75% fewer requests** to LTA DataMall, a free service shared by every developer in Singapore.
+- **Reuse.** The RFID "key" can be an old expired contactless bank card, so nothing new has to be bought for it.
+
+### RFID check-in/out: who it's for
+
+Each tap sends one Telegram message with the time (and, when leaving, the bus being caught). There's no GPS and no phone tracking; it only records a tap at the door that the person chose to make.
+
+| Use case | How ExitPilot helps |
+|---|---|
+| **Parents and children** | A child taps their card when leaving for school and when getting home. Parents at work get "left home at 07:12, heading for bus 169" and "home at 15:40" without the child having to remember to text. |
+| **Elderly family members living alone** | A tap when going out and coming back gives family a simple sign of their day and routine, without cameras or wearables. |
+| **Shared flats and hostels** | A "who's home" log in a group chat, so housemates know whether to lock up or expect someone. |
+| **Small offices, labs and makerspaces** | Replaces a paper sign-in sheet: every tap in or out goes to a Telegram group with the time. During a fire drill, the log shows who is still inside. |
+| **Shared equipment** | Put a tag on a camera, tool or laptop and tap it out and back in to see who has it. |
+
+Today the firmware handles one person and one card (`PERSON_NAME`, `KNOWN_TAGS`). Supporting several people would mean mapping each tag to a name, which is a small change to `handleTap()`.
+
+**Privacy:** the reader only reads the card's chip ID, never a bank card number, and messages go only to the Telegram chat the owner set up. Anyone using it to keep track of someone else should make sure that person knows and agrees.
+
 ## Hardware
 
 - M5Stack Fire
@@ -67,4 +94,4 @@ All internet work (LTA, NEA, Telegram) runs in a background task on the ESP32's 
 - **Step 2**: Wi-Fi, NTP time (SGT), live LTA bus arrivals and the leave-now countdown.
 - **Step 3**: NEA 2-hour forecast and rain alert.
 - **Step 4**: ToF wake/sleep with a learned background (works wherever it's mounted), Light-unit night dimming (this unit reads higher when darker: ~2150 lit, 4095 dark), ENV II indoor readout, automatic Wi-Fi reconnect.
-- **Step 5**: RFID tap-in/out with Telegram messages (chat found automatically, state kept across reboots). Network moved to its own task on core 0 so taps register instantly; tap debouncing by card presence plus a lockout.
+- **Step 5**: RFID tap-in/out (locked to the owner's card with `KNOWN_TAGS`) with Telegram messages (chat found automatically, state kept across reboots). Network moved to its own task on core 0 so taps register instantly; tap debouncing by card presence plus a lockout.

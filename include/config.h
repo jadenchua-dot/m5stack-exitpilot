@@ -35,7 +35,7 @@
 #define PERSON_NAME         "Jad"    // used in the Telegram messages
 // Tags allowed to check in/out, as shown on screen when tapped, e.g. "A1B2C3D4,04AABBCC".
 // Leave "" to accept any card.
-#define KNOWN_TAGS          ""
+#define KNOWN_TAGS          "350E21BF"
 #define RFID_POLL_MS        50       // how often the reader is checked
 #define TAP_GONE_MS         1500     // card must be away this long before it can count again
 #define TAP_LOCKOUT_MS      5000     // ignore every card for this long after a counted tap
