@@ -5,6 +5,11 @@ A box by the front door that answers one question every morning: **when do I nee
 It pulls live bus arrivals for your stop from LTA DataMall, subtracts your walking time, and shows a big **"Leave in 4 min" / "LEAVE NOW"**. If NEA's 2-hour forecast says rain for your area, the screen bar turns blue, the side LEDs pulse blue and it beeps: bring an umbrella.
 
 <p align="center">
+  <a href="docs/exitpilot-demo.mp4"><img src="docs/exitpilot-preview.gif" width="90%" alt="3D animation: the screen wakes as you walk up, counts down to LEAVE NOW, then you tap your card and a Telegram message arrives"></a>
+</p>
+<p align="center"><b><a href="docs/exitpilot-demo.mp4">Watch the full 56-second 3D walkthrough (MP4)</a></b>: checking it before you leave, the rain warning, tapping out, sleep, night dimming and coming home. The interactive version with chapters is <code>docs/animation/index.html</code> (open it in a browser).</p>
+
+<p align="center">
   <img src="docs/leave-in-3.jpg" width="45%" alt="Leave in 3 min">
   <img src="docs/leave-now.jpg" width="45%" alt="LEAVE NOW">
 </p>
