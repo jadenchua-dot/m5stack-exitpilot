@@ -1,7 +1,6 @@
-# Builds the firmware on every push and pull request.
-# On every push to main it also refreshes the "latest" GitHub release, so the newest
-# ready-to-flash firmware is always at:
-#   https://github.com/<owner>/<repo>/releases/tag/latest
+# Builds the firmware on every push and pull request, so a change that breaks the
+# build is caught before it reaches the device. CI compiles with the example secrets;
+# to flash your own Wi-Fi, LTA and Telegram details, build locally (see README).
 name: Build firmware
 
 on:
@@ -12,7 +11,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   build:
